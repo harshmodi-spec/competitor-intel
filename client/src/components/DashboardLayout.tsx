@@ -21,11 +21,12 @@ import {
 } from "@/components/ui/sidebar";
 import { getLoginUrl } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
-import { LayoutDashboard, Shield, LogOut, PanelLeft, TrendingUp, Search } from "lucide-react";
+import { LayoutDashboard, Shield, LogOut, PanelLeft, TrendingUp } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
 import { Button } from "./ui/button";
+import { CompanyLogo } from "@/components/CompanyLogo";
 
 const menuItems = [
   { icon: LayoutDashboard, label: "Dashboard", path: "/" },
@@ -172,6 +173,17 @@ function DashboardLayoutContent({
           </SidebarHeader>
 
           <SidebarContent className="gap-0">
+            <div className="px-3 pb-2 group-data-[collapsible=icon]:hidden">
+              <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-2">Tracked Companies</p>
+              <div className="space-y-2">
+                {["CRED", "IND Money", "LendenClub"].map((name) => (
+                  <div key={name} className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <CompanyLogo displayName={name} size="sm" className="w-7 h-7" />
+                    <span className="truncate">{name}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
             <SidebarMenu className="px-2 py-1">
               {menuItems.map(item => {
                 const basePath = item.path.split("?")[0];
