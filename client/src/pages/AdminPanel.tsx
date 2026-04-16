@@ -1,6 +1,7 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { CompanyLogo } from "@/components/CompanyLogo";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -69,9 +70,10 @@ export default function AdminPanel() {
 
   const uploadFile = trpc.files.upload.useMutation({
     onSuccess: () => {
-      toast.success("File uploaded and AI parsing started");
+      toast.success("File uploaded — data extracted, AI enrichment running in background");
       utils.files.forCompany.invalidate();
       utils.companies.getWithData.invalidate();
+      utils.companies.getAllWithData.invalidate();
       setUploading(false);
     },
     onError: (err) => {
@@ -215,9 +217,7 @@ export default function AdminPanel() {
                   onClick={() => setSelectedCompanyId(company.id)}
                 >
                   <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
-                      <span className="text-xs font-bold text-primary">{company.displayName.charAt(0)}</span>
-                    </div>
+                    <CompanyLogo displayName={company.displayName} size="sm" />
                     <div>
                       <p className="text-sm font-medium">{company.displayName}</p>
                       <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 mt-0.5">
@@ -251,7 +251,6 @@ export default function AdminPanel() {
                 <CardContent className="py-4">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                     import { CompanyLogo } from "@/components/CompanyLogo";
                       <CompanyLogo displayName={companyData.displayName} size="md" />
                       <div>
                         <h2 className="text-lg font-semibold">{companyData.displayName}</h2>
@@ -430,6 +429,26 @@ function MetricEditor({ label, metricName, companyId, currentValue, currentUnit,
   const [value, setValue] = useState(currentValue || "");
   const [unit, setUnit] = useState(currentUnit || "INR Cr");
   const [period, setPeriod] = useState(currentPeriod || "FY2024");
+  const [error, setError] = useState<string | null>(null);
+
+  // Sync local state when server data updates (e.g. after parse/save)
+  useEffect(() => {
+    if (!editing) {
+      setValue(currentValue || "");
+      setUnit(currentUnit || "INR Cr");
+      setPeriod(currentPeriod || "FY2024");
+    }
+  }, [currentValue, currentUnit, currentPeriod, editing]);
+
+  const handleSave = () => {
+    const trimmed = value.trim();
+    if (trimmed === "") { setError("Value cannot be empty"); return; }
+    const num = parseFloat(trimmed);
+    if (isNaN(num)) { setError("Must be a valid number"); return; }
+    setError(null);
+    onSave(trimmed, unit, period);
+    setEditing(false);
+  };
 
   return (
     <div className="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-secondary/30 transition-colors">
@@ -438,17 +457,20 @@ function MetricEditor({ label, metricName, companyId, currentValue, currentUnit,
       </div>
       <div className="flex-1 flex items-center gap-2">
         {editing ? (
-          <>
-            <Input value={value} onChange={e => setValue(e.target.value)} placeholder="Value" className="h-7 text-xs bg-secondary w-24" />
-            <Input value={unit} onChange={e => setUnit(e.target.value)} placeholder="Unit" className="h-7 text-xs bg-secondary w-20" />
-            <Input value={period} onChange={e => setPeriod(e.target.value)} placeholder="Period" className="h-7 text-xs bg-secondary w-20" />
-            <Button size="sm" className="h-7 px-2" onClick={() => { onSave(value, unit, period); setEditing(false); }}>
-              <Check className="h-3 w-3" />
-            </Button>
-            <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => setEditing(false)}>
-              <X className="h-3 w-3" />
-            </Button>
-          </>
+          <div className="flex flex-col gap-1 flex-1">
+            <div className="flex items-center gap-1.5">
+              <Input value={value} onChange={e => { setValue(e.target.value); setError(null); }} placeholder="Value" className="h-7 text-xs bg-secondary w-24" />
+              <Input value={unit} onChange={e => setUnit(e.target.value)} placeholder="Unit" className="h-7 text-xs bg-secondary w-20" />
+              <Input value={period} onChange={e => setPeriod(e.target.value)} placeholder="Period" className="h-7 text-xs bg-secondary w-20" />
+              <Button size="sm" className="h-7 px-2" onClick={handleSave}>
+                <Check className="h-3 w-3" />
+              </Button>
+              <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => { setEditing(false); setError(null); }}>
+                <X className="h-3 w-3" />
+              </Button>
+            </div>
+            {error && <span className="text-[10px] text-destructive ml-1">{error}</span>}
+          </div>
         ) : (
           <>
             <span className="text-sm font-mono">
@@ -465,6 +487,7 @@ function MetricEditor({ label, metricName, companyId, currentValue, currentUnit,
               setValue(currentValue || "");
               setUnit(currentUnit || "INR Cr");
               setPeriod(currentPeriod || "FY2024");
+              setError(null);
               setEditing(true);
             }}>
               <Edit3 className="h-3 w-3" />

@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef } from "react";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
+import { CompanyLogo } from "@/components/CompanyLogo";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -87,8 +88,8 @@ function CompanyCard({ company, onClick }: { company: any; onClick: () => void }
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-3">
-        <CompanyLogo displayName={company.displayName || "?"} size="md" />
-        <div>
+            <CompanyLogo displayName={company.displayName || "?"} size="md" />
+            <div>
               <CardTitle className="text-base font-semibold group-hover:text-primary transition-colors">
                 {company.displayName}
               </CardTitle>
@@ -560,19 +561,51 @@ function InsightsPanel({ peerGroup }: { peerGroup: "wealth_management" | "p2p_le
   );
 }
 
+type ChatMessage = { role: "user" | "assistant"; content: string };
+
+const EXAMPLE_QUESTIONS = [
+  "Which company has the highest revenue?",
+  "Compare CRED vs IND Money revenue",
+  "Which companies are loss-making?",
+  "Who has the best EBITDA margin?",
+  "Rank companies by AUM",
+];
+
 function AIQueryBox() {
   const [question, setQuestion] = useState("");
-  const [answer, setAnswer] = useState<string | null>(null);
+  const [history, setHistory] = useState<ChatMessage[]>([]);
   const [isOpen, setIsOpen] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
   const askAI = trpc.ai.query.useMutation({
-    onSuccess: (data) => setAnswer(data.answer),
+    onSuccess: (data) => {
+      setHistory(prev => [...prev, { role: "assistant", content: data.answer }]);
+    },
+    onError: (err) => {
+      setHistory(prev => [...prev, { role: "assistant", content: `Error: ${err.message}` }]);
+    },
   });
+
+  const handleSend = () => {
+    const q = question.trim();
+    if (!q || askAI.isPending) return;
+    setHistory(prev => [...prev, { role: "user", content: q }]);
+    setQuestion("");
+    askAI.mutate({ question: q });
+  };
+
+  // Scroll to bottom on new messages
+  useMemo(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [history, askAI.isPending]);
 
   if (!isOpen) {
     return (
       <button
         onClick={() => setIsOpen(true)}
-        className="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-xl bg-primary text-primary-foreground shadow-lg hover:shadow-xl transition-all text-sm font-medium"
+        className="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-xl bg-primary text-primary-foreground shadow-lg hover:shadow-xl hover:scale-105 transition-all text-sm font-medium"
       >
         <MessageSquare className="h-4 w-4" /> Ask AI
       </button>
@@ -580,38 +613,101 @@ function AIQueryBox() {
   }
 
   return (
-    <div className="fixed bottom-6 right-6 z-50 w-96 max-h-[500px] bg-card border border-border rounded-xl shadow-2xl flex flex-col">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+    <div className="fixed bottom-6 right-6 z-50 w-[420px] max-h-[560px] bg-card border border-border rounded-xl shadow-2xl flex flex-col">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
         <div className="flex items-center gap-2">
-          <MessageSquare className="h-4 w-4 text-primary" />
-          <span className="text-sm font-medium">Ask AI about companies</span>
+          <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center">
+            <MessageSquare className="h-3.5 w-3.5 text-primary" />
+          </div>
+          <div>
+            <span className="text-sm font-semibold">Financial Intelligence Q/A</span>
+            <p className="text-[10px] text-muted-foreground">Ask about any company or comparison</p>
+          </div>
         </div>
-        <button onClick={() => setIsOpen(false)} className="text-muted-foreground hover:text-foreground text-xs">Close</button>
+        <div className="flex items-center gap-2">
+          {history.length > 0 && (
+            <button
+              onClick={() => setHistory([])}
+              className="text-[10px] text-muted-foreground hover:text-foreground transition-colors px-1.5 py-0.5 rounded hover:bg-secondary"
+            >
+              Clear
+            </button>
+          )}
+          <button
+            onClick={() => setIsOpen(false)}
+            className="text-muted-foreground hover:text-foreground text-xs w-6 h-6 flex items-center justify-center rounded hover:bg-secondary transition-colors"
+          >
+            ✕
+          </button>
+        </div>
       </div>
-      {answer && (
-        <div className="flex-1 overflow-y-auto p-4 text-sm">
-          <Streamdown>{answer}</Streamdown>
-        </div>
-      )}
-      <div className="p-3 border-t border-border">
+
+      {/* Chat area */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-3 min-h-0">
+        {history.length === 0 ? (
+          <div className="py-4">
+            <p className="text-xs text-muted-foreground text-center mb-3">Try asking:</p>
+            <div className="space-y-1.5">
+              {EXAMPLE_QUESTIONS.map((q, i) => (
+                <button
+                  key={i}
+                  onClick={() => setQuestion(q)}
+                  className="w-full text-left text-xs px-3 py-2 rounded-lg bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          history.map((msg, i) => (
+            <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+              <div
+                className={`max-w-[85%] rounded-xl px-3 py-2 text-sm ${
+                  msg.role === "user"
+                    ? "bg-primary text-primary-foreground rounded-br-sm"
+                    : "bg-secondary text-foreground rounded-bl-sm"
+                }`}
+              >
+                {msg.role === "assistant" ? (
+                  <div className="prose prose-invert prose-sm max-w-none text-xs leading-relaxed">
+                    <Streamdown>{msg.content}</Streamdown>
+                  </div>
+                ) : (
+                  <span>{msg.content}</span>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+        {askAI.isPending && (
+          <div className="flex justify-start">
+            <div className="bg-secondary rounded-xl rounded-bl-sm px-3 py-2 flex items-center gap-2">
+              <Loader2 className="h-3 w-3 animate-spin text-primary" />
+              <span className="text-xs text-muted-foreground">Analysing…</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Input */}
+      <div className="p-3 border-t border-border shrink-0">
         <div className="flex items-center gap-2">
           <Input
             value={question}
             onChange={e => setQuestion(e.target.value)}
-            placeholder="e.g. Which company has the highest revenue?"
-            className="flex-1 bg-secondary border-border text-sm"
-            onKeyDown={e => {
-              if (e.key === "Enter" && question.trim()) {
-                askAI.mutate({ question: question.trim() });
-              }
-            }}
+            placeholder="Ask about revenue, margins, comparisons…"
+            className="flex-1 bg-secondary border-border text-sm h-9"
+            onKeyDown={e => { if (e.key === "Enter") handleSend(); }}
           />
           <Button
             size="sm"
+            className="h-9 px-3"
             disabled={askAI.isPending || !question.trim()}
-            onClick={() => askAI.mutate({ question: question.trim() })}
+            onClick={handleSend}
           >
-            {askAI.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+            {askAI.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
           </Button>
         </div>
       </div>
@@ -806,4 +902,3 @@ export default function Home() {
     </div>
   );
 }
-import { CompanyLogo } from "@/components/CompanyLogo";
