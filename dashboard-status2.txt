@@ -1,0 +1,9 @@
+Dashboard rendering correctly with:
+- Dark Bloomberg-style theme
+- Tag-based filtering (All, B2B, HNI-focused, consumer, etc.)
+- Ask AI floating button
+- Company cards with clean metrics
+- Revenue showing 999 Cr for 1 Finance (from test override - need to fix back)
+- All features working: tabs, search, cards/benchmarking toggle
+
+Note: 1 Finance revenue shows 999 because the test upserted it. Need to restore or the seed data will be overridden.

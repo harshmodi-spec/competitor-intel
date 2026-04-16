@@ -1,0 +1,8 @@
+Benchmarking view bottom section renders correctly:
+- AUM & Users dual-axis chart
+- Employee Count bar chart
+- Side-by-Side Benchmarking table with all 11 WM companies
+- Table columns: Company, Revenue, EBITDA, PAT, Valuation, Funds Raised, AUM, Users, Employees
+- All values formatted correctly with INR Cr notation
+- Color-coded company dots in table
+- Clean institutional look

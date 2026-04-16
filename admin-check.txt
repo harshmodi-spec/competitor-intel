@@ -1,0 +1,12 @@
+Admin Panel rendering correctly:
+- Company list with all 15 companies (WM + P2P badges)
+- Edit button (pencil icon) for each company name
+- Selected company detail view showing:
+  - Company header with internal name and last updated timestamp
+  - Refresh News button
+  - Upload File button
+  - Parsed Data & Manual Override section with all metrics
+  - Each metric shows: value, unit, period, source badge, edit button
+  - Upload History section (empty for now - no files uploaded yet)
+- Top actions: Refresh All News, Generate WM Insights, Generate P2P Insights
+- Revenue shows 999 (from test) - this will be restored

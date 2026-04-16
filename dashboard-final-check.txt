@@ -1,0 +1,13 @@
+Final dashboard check:
+- Dark Bloomberg-style theme rendering correctly
+- Sidebar: Dashboard, Benchmarking, Admin Panel
+- Tag filters: All, B2B, HNI-focused, consumer, distribution, etc.
+- Two tabs: Wealth Management, P2P Lending
+- Company cards with metrics, source tags, product offerings
+- Ask AI floating button in bottom-right
+- Cards/Benchmarking toggle
+- Search bar
+- 1 Finance revenue shows 999 Cr (from test upsert) - need to fix back to 45
+- All 18 tests passing
+- No TypeScript errors
+- Need to fix 1 Finance revenue back to original seed value

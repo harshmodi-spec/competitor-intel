@@ -1,0 +1,10 @@
+Company Profile page (Dezerv) renders correctly:
+- Company header with initial, name, peer group badge, category, tags
+- Last updated timestamp in top right
+- Product Offerings section with color dots
+- Financial Metrics: Revenue, Total Expenses, EBITDA, PAT - all with source tags and periods
+- Valuation & Funding: Valuation, Funds Raised, AUM, Users/Customers
+- Operational: Employee Count, Files Uploaded count
+- Latest Business Updates with clickable news items, source badges, dates, and SOURCE: NEWS tags
+- Back button to return to dashboard
+- Clean dark institutional design

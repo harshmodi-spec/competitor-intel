@@ -1,0 +1,3 @@
+Dashboard is rendering correctly with dark theme, sidebar nav, two tabs, search, cards/benchmarking toggle.
+No TypeScript errors. No companies seeded yet - need to create seed script.
+Need to: 1) Seed all companies with data, 2) Write tests, 3) Add AI query box stretch feature

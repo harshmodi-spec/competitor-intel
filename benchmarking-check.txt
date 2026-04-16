@@ -1,0 +1,8 @@
+Benchmarking view is rendering correctly with:
+- Revenue Comparison chart (bar chart, all 11 WM companies)
+- Profitability chart (grouped bar: EBITDA + PAT)
+- Funding Comparison chart
+- Valuation Comparison chart
+- Company toggle buttons with eye icons to show/hide companies
+- All charts use Recharts with proper dark theme styling
+- Need to scroll down to see AUM/Users and Employee Count charts plus comparison table
