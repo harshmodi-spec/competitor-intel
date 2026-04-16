@@ -9,6 +9,7 @@ import { invokeLLM } from "./_core/llm";
 import { nanoid } from "nanoid";
 import type { ParsedFinancialData, MetricSource } from "../shared/types";
 import { METRIC_NAMES } from "../shared/types";
+import { extractFromExcelBase64 } from "./excelExtractor";
 
 export const appRouter = router({
   system: systemRouter,
@@ -176,6 +177,17 @@ export const appRouter = router({
 
         const { url } = await storagePut(fileKey, buffer, contentType);
 
+        // For Excel: run keyword-based extraction immediately so data is available fast
+        let keywordExtracted: ParsedFinancialData | null = null;
+        if (input.fileType === "excel") {
+          try {
+            keywordExtracted = extractFromExcelBase64(input.fileBase64);
+            console.log("[Excel] Keyword extraction complete:", Object.keys(keywordExtracted).length, "metrics found");
+          } catch (err) {
+            console.error("[Excel] Keyword extraction failed (will rely on AI):", err);
+          }
+        }
+
         const uploadId = await db.createFileUpload({
           companyId: input.companyId,
           fileName: input.fileName,
@@ -186,8 +198,39 @@ export const appRouter = router({
           uploadedBy: ctx.user.id,
         });
 
-        // Start AI parsing in background
-        parseFileInBackground(uploadId, input.companyId, url, input.fileType, input.fileName).catch(err => {
+        // Save keyword-extracted metrics immediately (source: parsed_excel)
+        if (keywordExtracted) {
+          const source: MetricSource = "parsed_excel";
+          const metricMappings: Array<{ key: keyof ParsedFinancialData; name: string }> = [
+            { key: "revenue", name: METRIC_NAMES.REVENUE },
+            { key: "totalExpenses", name: METRIC_NAMES.TOTAL_EXPENSES },
+            { key: "ebitda", name: METRIC_NAMES.EBITDA },
+            { key: "pat", name: METRIC_NAMES.PAT },
+            { key: "aum", name: METRIC_NAMES.AUM },
+            { key: "loanBook", name: METRIC_NAMES.LOAN_BOOK },
+            { key: "users", name: METRIC_NAMES.USERS },
+            { key: "employeeCount", name: METRIC_NAMES.EMPLOYEE_COUNT },
+            { key: "fundsRaised", name: METRIC_NAMES.FUNDS_RAISED },
+            { key: "valuation", name: METRIC_NAMES.VALUATION },
+          ];
+          for (const mapping of metricMappings) {
+            const data = keywordExtracted[mapping.key];
+            if (data && typeof data === "object" && "value" in data && data.value) {
+              await db.upsertMetric({
+                companyId: input.companyId,
+                metricName: mapping.name,
+                metricValue: data.value,
+                metricUnit: data.unit,
+                period: data.period,
+                source,
+                sourceDetail: input.fileName,
+              });
+            }
+          }
+        }
+
+        // Start AI parsing in background (will enrich/overwrite with better values)
+        parseFileInBackground(uploadId, input.companyId, url, input.fileType, input.fileName, keywordExtracted).catch(err => {
           console.error("[AI Parse] Background parsing failed:", err);
         });
 
@@ -261,26 +304,72 @@ export const appRouter = router({
         const companyIds = targetCompanies.map(c => c.id);
         const allMetrics = await db.getMetricsForCompanies(companyIds);
 
-        const context = targetCompanies.map(c => {
+        // Build structured data for both AI and rule-based engine
+        type CompanyData = {
+          id: number;
+          displayName: string;
+          peerGroup: string;
+          metrics: Record<string, { value: string; unit: string; period: string }>;
+        };
+        const companiesWithMetrics: CompanyData[] = targetCompanies.map(c => {
           const metrics = allMetrics.filter(m => m.companyId === c.id);
-          return `Company: ${c.displayName} (${c.peerGroup})\nMetrics: ${metrics.map(m => `${m.metricName}: ${m.metricValue} ${m.metricUnit || ''} (${m.period || 'latest'})`).join(', ')}`;
-        }).join('\n\n');
-
-        const response = await invokeLLM({
-          messages: [
-            { role: "system", content: "You are a financial analyst assistant. Answer questions about Indian fintech companies based on the provided data. Be precise, analytical, and cite specific numbers. If data is not available, say so clearly." },
-            { role: "user", content: `Context:\n${context}\n\nQuestion: ${input.question}` },
-          ],
+          const metricsMap: Record<string, { value: string; unit: string; period: string }> = {};
+          for (const m of metrics) {
+            if (!metricsMap[m.metricName]) {
+              metricsMap[m.metricName] = { value: m.metricValue || "N/A", unit: m.metricUnit || "", period: m.period || "" };
+            }
+          }
+          return { id: c.id, displayName: c.displayName, peerGroup: c.peerGroup, metrics: metricsMap };
         });
 
-        return { answer: typeof response.choices[0]?.message?.content === 'string' ? response.choices[0].message.content : 'Unable to generate response.' };
+        const context = companiesWithMetrics.map(c =>
+          `Company: ${c.displayName} (${c.peerGroup})\nMetrics: ${Object.entries(c.metrics).map(([k, v]) => `${k}: ${v.value} ${v.unit} (${v.period})`).join(', ')}`
+        ).join('\n\n');
+
+        // Try AI first; fall back to rule-based engine if AI fails
+        try {
+          const response = await invokeLLM({
+            messages: [
+              {
+                role: "system",
+                content: `You are a senior financial analyst specialising in Indian fintech. Answer questions about these companies using the provided data.
+
+Rules:
+- Be precise and cite specific numbers in ₹ Cr or counts
+- For comparisons, show the difference clearly (e.g. "CRED has ₹300 Cr higher revenue than IND Money")
+- For rankings, list in order with values
+- If a metric is missing for a company, say "data not available for <Company>"
+- Derive margins/ratios where possible (e.g. EBITDA margin = EBITDA / Revenue × 100%)
+- Format your response in clean markdown with headers for multi-part answers`,
+              },
+              { role: "user", content: `Data:\n${context}\n\nQuestion: ${input.question}` },
+            ],
+          });
+          const aiAnswer = typeof response.choices[0]?.message?.content === 'string'
+            ? response.choices[0].message.content
+            : null;
+          if (aiAnswer) return { answer: aiAnswer, source: "ai" };
+        } catch (err) {
+          console.error("[AI Q/A] AI call failed, using rule-based fallback:", err);
+        }
+
+        // Rule-based fallback
+        const answer = ruleBasedAnswer(input.question, companiesWithMetrics);
+        return { answer, source: "rules" };
       }),
   }),
 });
 
 // ============ BACKGROUND FUNCTIONS ============
 
-async function parseFileInBackground(uploadId: number, companyId: number, fileUrl: string, fileType: "pdf" | "excel", fileName: string) {
+async function parseFileInBackground(
+  uploadId: number,
+  companyId: number,
+  fileUrl: string,
+  fileType: "pdf" | "excel",
+  fileName: string,
+  keywordData?: ParsedFinancialData | null,
+) {
   try {
     await db.updateFileUploadStatus(uploadId, "parsing");
 
@@ -333,7 +422,6 @@ Schema:
     const source: MetricSource = fileType === "pdf" ? "parsed_pdf" : "parsed_excel";
     const sourceDetail = fileName;
 
-    // Save extracted metrics
     const metricMappings: Array<{ key: keyof ParsedFinancialData; name: string }> = [
       { key: "revenue", name: METRIC_NAMES.REVENUE },
       { key: "totalExpenses", name: METRIC_NAMES.TOTAL_EXPENSES },
@@ -347,8 +435,11 @@ Schema:
       { key: "valuation", name: METRIC_NAMES.VALUATION },
     ];
 
+    // AI results take priority; keyword data fills any gaps AI missed
+    const merged: ParsedFinancialData = { ...(keywordData ?? {}), ...parsed };
+
     for (const mapping of metricMappings) {
-      const data = parsed[mapping.key];
+      const data = merged[mapping.key];
       if (data && typeof data === 'object' && 'value' in data && data.value) {
         await db.upsertMetric({
           companyId,
@@ -363,7 +454,12 @@ Schema:
     }
   } catch (error) {
     console.error("[AI Parse] Error:", error);
-    await db.updateFileUploadStatus(uploadId, "failed", { error: String(error) });
+    // If AI fails but we have keyword data, mark as parsed (partial) rather than failed
+    if (keywordData && Object.keys(keywordData).length > 0) {
+      await db.updateFileUploadStatus(uploadId, "parsed", keywordData);
+    } else {
+      await db.updateFileUploadStatus(uploadId, "failed", { error: String(error) });
+    }
   }
 }
 
@@ -492,3 +588,171 @@ Generate exactly 6 insights covering: highest revenue scale, most funded, fastes
 }
 
 export type AppRouter = typeof appRouter;
+
+// ============ RULE-BASED Q/A ENGINE ============
+
+type CompanyQAData = {
+  id: number;
+  displayName: string;
+  peerGroup: string;
+  metrics: Record<string, { value: string; unit: string; period: string }>;
+};
+
+function getMetricNum(company: CompanyQAData, metricName: string): number | null {
+  const m = company.metrics[metricName];
+  if (!m || !m.value || m.value === "N/A") return null;
+  const n = parseFloat(m.value);
+  return isNaN(n) ? null : n;
+}
+
+function fmt(n: number | null, unit?: string): string {
+  if (n === null) return "N/A";
+  if (unit === "count") {
+    if (n >= 10_000_000) return `${(n / 10_000_000).toFixed(1)} Cr`;
+    if (n >= 100_000) return `${(n / 100_000).toFixed(1)} L`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+    return n.toLocaleString("en-IN");
+  }
+  if (Math.abs(n) >= 1_000) return `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 0 })} Cr`;
+  return `₹${n.toFixed(1)} Cr`;
+}
+
+function ruleBasedAnswer(question: string, companies: CompanyQAData[]): string {
+  const q = question.toLowerCase();
+
+  // Helper: find companies mentioned by name
+  const mentionedCompanies = companies.filter(c =>
+    q.includes(c.displayName.toLowerCase()) ||
+    q.includes(c.displayName.toLowerCase().replace(/\s+/g, ""))
+  );
+  const scope = mentionedCompanies.length > 0 ? mentionedCompanies : companies;
+
+  // Detect which metric is being asked about
+  const metricHints: Array<{ keywords: string[]; metricKey: string; label: string; unit: string }> = [
+    { keywords: ["revenue", "income", "earnings"], metricKey: "revenue", label: "Revenue", unit: "INR Cr" },
+    { keywords: ["ebitda"], metricKey: "ebitda", label: "EBITDA", unit: "INR Cr" },
+    { keywords: ["profit", "pat", "net profit", "profitable", "loss making", "loss-making"], metricKey: "pat", label: "PAT", unit: "INR Cr" },
+    { keywords: ["aum", "assets under management"], metricKey: "aum", label: "AUM", unit: "INR Cr" },
+    { keywords: ["loan book", "loan_book", "lending", "loans"], metricKey: "loan_book", label: "Loan Book", unit: "INR Cr" },
+    { keywords: ["valuation", "valued"], metricKey: "valuation", label: "Valuation", unit: "INR Cr" },
+    { keywords: ["funding", "funds raised", "funded", "investment"], metricKey: "funds_raised", label: "Funds Raised", unit: "INR Cr" },
+    { keywords: ["user", "customer", "subscriber"], metricKey: "users", label: "Users", unit: "count" },
+    { keywords: ["employee", "headcount", "staff"], metricKey: "employee_count", label: "Employees", unit: "count" },
+  ];
+
+  const detectedMetric = metricHints.find(mh => mh.keywords.some(k => q.includes(k)));
+
+  // Compare pattern: "compare X vs Y" or "compare X and Y"
+  if ((q.includes("compare") || q.includes("vs") || q.includes(" and ") || q.includes("versus")) && mentionedCompanies.length >= 2) {
+    const lines: string[] = [`## Comparison: ${mentionedCompanies.map(c => c.displayName).join(" vs ")}\n`];
+    const metricsToShow = detectedMetric
+      ? [detectedMetric]
+      : metricHints.slice(0, 5);
+
+    for (const mh of metricsToShow) {
+      lines.push(`**${mh.label}**`);
+      const values = mentionedCompanies.map(c => ({ name: c.displayName, val: getMetricNum(c, mh.metricKey) }));
+      const available = values.filter(v => v.val !== null);
+      if (available.length === 0) {
+        lines.push("Data not available for any of the selected companies.\n");
+        continue;
+      }
+      for (const v of values) {
+        lines.push(`- ${v.name}: ${fmt(v.val, mh.unit)}`);
+      }
+      if (available.length >= 2) {
+        const sorted = [...available].sort((a, b) => (b.val ?? 0) - (a.val ?? 0));
+        const diff = (sorted[0].val ?? 0) - (sorted[1].val ?? 0);
+        lines.push(`→ **${sorted[0].name}** leads by ${fmt(diff, mh.unit)}`);
+      }
+      lines.push("");
+    }
+    return lines.join("\n");
+  }
+
+  // Highest / Lowest pattern
+  if (q.includes("highest") || q.includes("largest") || q.includes("most") || q.includes("top") || q.includes("best")) {
+    const mh = detectedMetric ?? metricHints[0];
+    const ranked = scope
+      .map(c => ({ name: c.displayName, val: getMetricNum(c, mh.metricKey) }))
+      .filter(v => v.val !== null)
+      .sort((a, b) => (b.val ?? 0) - (a.val ?? 0));
+
+    if (ranked.length === 0) return `No ${mh.label} data available for the companies in scope.`;
+    const winner = ranked[0];
+    const lines = [`**${winner.name}** has the highest **${mh.label}** at ${fmt(winner.val, mh.unit)}.\n`];
+    if (ranked.length > 1) {
+      lines.push("Full ranking:");
+      ranked.forEach((r, i) => lines.push(`${i + 1}. ${r.name}: ${fmt(r.val, mh.unit)}`));
+    }
+    return lines.join("\n");
+  }
+
+  if (q.includes("lowest") || q.includes("smallest") || q.includes("least") || q.includes("worst")) {
+    const mh = detectedMetric ?? metricHints[0];
+    const ranked = scope
+      .map(c => ({ name: c.displayName, val: getMetricNum(c, mh.metricKey) }))
+      .filter(v => v.val !== null)
+      .sort((a, b) => (a.val ?? 0) - (b.val ?? 0));
+
+    if (ranked.length === 0) return `No ${mh.label} data available.`;
+    const loser = ranked[0];
+    const lines = [`**${loser.name}** has the lowest **${mh.label}** at ${fmt(loser.val, mh.unit)}.\n`];
+    if (ranked.length > 1) {
+      lines.push("Full ranking (lowest to highest):");
+      ranked.forEach((r, i) => lines.push(`${i + 1}. ${r.name}: ${fmt(r.val, mh.unit)}`));
+    }
+    return lines.join("\n");
+  }
+
+  // Loss-making / profitable
+  if (q.includes("loss") || q.includes("loss-making") || q.includes("loss making") || q.includes("unprofitable")) {
+    const lossMakers = scope.filter(c => (getMetricNum(c, "pat") ?? 0) < 0);
+    if (lossMakers.length === 0) return "Based on available data, none of the companies in scope are currently loss-making (PAT data available).";
+    return `**Loss-making companies:**\n${lossMakers.map(c => `- ${c.displayName}: PAT = ${fmt(getMetricNum(c, "pat"), "INR Cr")}`).join("\n")}`;
+  }
+
+  if (q.includes("profitable") && !q.includes("unprofitable")) {
+    const profitable = scope.filter(c => (getMetricNum(c, "pat") ?? -1) > 0);
+    if (profitable.length === 0) return "No companies have positive PAT data available in scope.";
+    const sorted = profitable.sort((a, b) => (getMetricNum(b, "pat") ?? 0) - (getMetricNum(a, "pat") ?? 0));
+    return `**Profitable companies (by PAT):**\n${sorted.map(c => `- ${c.displayName}: ₹${fmt(getMetricNum(c, "pat"), "INR Cr")}`).join("\n")}`;
+  }
+
+  // Margin question
+  if (q.includes("margin")) {
+    const lines: string[] = ["**EBITDA Margins** (EBITDA / Revenue × 100%):\n"];
+    let hasData = false;
+    for (const c of scope) {
+      const rev = getMetricNum(c, "revenue");
+      const ebitda = getMetricNum(c, "ebitda");
+      if (rev && ebitda && rev !== 0) {
+        lines.push(`- ${c.displayName}: ${((ebitda / rev) * 100).toFixed(1)}%`);
+        hasData = true;
+      } else {
+        lines.push(`- ${c.displayName}: data not available`);
+      }
+    }
+    if (!hasData) return "Insufficient data to calculate margins. Revenue and EBITDA data needed.";
+    return lines.join("\n");
+  }
+
+  // Growth question
+  if (q.includes("growth") || q.includes("growing") || q.includes("fastest")) {
+    return "Growth rate data requires historical metrics across multiple periods. Please upload annual reports for multiple years or ask about current absolute values such as revenue or AUM.";
+  }
+
+  // Generic: show a summary for mentioned companies or all
+  const targetList = mentionedCompanies.length > 0 ? mentionedCompanies : scope.slice(0, 5);
+  const lines: string[] = [];
+  for (const c of targetList) {
+    lines.push(`### ${c.displayName}`);
+    for (const mh of metricHints.slice(0, 5)) {
+      const val = getMetricNum(c, mh.metricKey);
+      if (val !== null) lines.push(`- **${mh.label}**: ${fmt(val, mh.unit)}`);
+    }
+    lines.push("");
+  }
+  if (lines.length === 0) return "I don't have enough data to answer that question. Please upload financial data for the relevant companies.";
+  return lines.join("\n");
+}

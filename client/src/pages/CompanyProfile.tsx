@@ -1,5 +1,6 @@
 import { trpc } from "@/lib/trpc";
 import { useRoute, useLocation } from "wouter";
+import { CompanyLogo } from "@/components/CompanyLogo";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -104,7 +105,6 @@ export default function CompanyProfile() {
           </Button>
           <div>
             <div className="flex items-center gap-3">
-             import { CompanyLogo } from "@/components/CompanyLogo";
               <CompanyLogo displayName={company.displayName} size="lg" />
               <div>
                 <h1 className="text-2xl font-bold tracking-tight">{company.displayName}</h1>
